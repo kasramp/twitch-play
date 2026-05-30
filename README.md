@@ -1,6 +1,6 @@
 # Twitch Play
 
-A minimal Twitch CLI app built on top of MPV, Steamlink, and Fzf.
+A minimal Twitch CLI app built on top of mpv, streamlink, and fzf.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ There's a clientId in the `config.py` file, which you can use for experiments. I
 2. Set your Client ID in `twitch_play/config.py`.
 
 ```bash
-$ git clone https://github.com/yourname/twitch-play
+$ git clone https://github.com/kasramp/twitch-play
 $ cd twitch-play
 $ python -m venv venv && source venv/bin/activate
 $ pip install -r requirements.txt
