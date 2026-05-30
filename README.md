@@ -41,7 +41,7 @@ $ ./play-twitch
 
 ## Configuration
 
-There's a Client ID in the config.py file, which you can use for experiments. Ideally, you want to create your own app and use it, following the steps below:
+There's a Client ID in the `config.py` file, which you can use for experiments. Ideally, you want to create your own app and use it, following the steps below:
 
 1. Go to [dev.twitch.tv/console](https://dev.twitch.tv/console) and register a new app.
 2. Set the OAuth redirect URL to `http://localhost:8765/callback` and category to **Website Integration**.
