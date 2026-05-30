@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "twitch-play"
-version = "0.1.1"
+version = "0.1.2"
 description = "A minimal Twitch CLI client. Browse categories and streams with fzf, play with mpv."
 readme = "README.md"
 requires-python = ">=3.10"

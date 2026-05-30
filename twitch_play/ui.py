@@ -57,8 +57,9 @@ def pick_category(api):
 
         if key == "ctrl-f":
             try:
-                query = input("Search category: ").strip()
-            except (EOFError, KeyboardInterrupt):
+                result = fzf.prompt([], "--print-query --prompt='Search> ' --layout=reverse --no-info")
+                query = result[0].strip() if result else ""
+            except (Exception, SystemExit):
                 continue
             if query:
                 search_query = query
@@ -117,6 +118,7 @@ def pick_stream(streams):
     quality = quality_map.get(key, "best")
 
     return stream, quality
+
 
 def pick_quality(qualities):
     if not qualities:
