@@ -1,3 +1,4 @@
+import pyperclip
 from pyfzf.pyfzf import FzfPrompt
 
 fzf = FzfPrompt()
@@ -84,40 +85,46 @@ def pick_stream(streams):
         f"{s['user_name']:20s} {s['viewer_count']:>7,} viewers  {s.get('title', '')[:50]}\t{s['user_login']}"
         for s in streams
     ]
+    while True:
+        try:
+            result = fzf.prompt(
+                lines,
+                '--no-sort --no-info --delimiter="\t" --with-nth=1 --layout=reverse'
+                ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o,ctrl-c'
+                ' --prompt="Stream > "'
+                ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Esc ] back"',
+            )
+        except (Exception, SystemExit):
+            return None, None
 
-    try:
-        result = fzf.prompt(
-            lines,
-            '--no-sort --no-info --delimiter="\t" --with-nth=1 --layout=reverse'
-            ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o'
-            ' --prompt="Stream > "'
-            ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Esc ] back"',
-        )
-    except (Exception, SystemExit):
-        return None, None
+        if not result:
+            return None, None
 
-    if not result:
-        return None, None
+        key = result[0] if len(result) > 0 else ""
+        selected = result[1] if len(result) > 1 else None
 
-    key = result[0] if len(result) > 0 else ""
-    selected = result[1] if len(result) > 1 else None
+        if not selected or "\t" not in selected:
+            return None, None
 
-    if not selected or "\t" not in selected:
-        return None, None
+        _, user_login = selected.rsplit("\t", 1)
+        stream = next((s for s in streams if s["user_login"] == user_login), None)
 
-    _, user_login = selected.rsplit("\t", 1)
-    stream = next((s for s in streams if s["user_login"] == user_login), None)
+        if key == "ctrl-c":
+            url = f"https://twitch.tv/{user_login}"
+            pyperclip.copy(url)
+            print(f"Copied: {url}")
+            continue
 
-    quality_map = {
-        "ctrl-l": "480p",
-        "ctrl-h": "720p",
-        "ctrl-b": "best",
-        "ctrl-o": "pick",
-        "":       "best",
-    }
-    quality = quality_map.get(key, "best")
+        quality_map = {
+            "ctrl-l": "480p",
+            "ctrl-h": "720p",
+            "ctrl-b": "best",
+            "ctrl-o": "pick",
+            "":       "best",
+        }
+        quality = quality_map.get(key, "best")
 
-    return stream, quality
+        return stream, quality
 
 
 def pick_quality(qualities):
