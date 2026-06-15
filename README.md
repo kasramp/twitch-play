@@ -56,5 +56,15 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 | Ctrl-H | Play at 720p                        |
 | Ctrl-B | Play at best quality                |
 | Ctrl-O | Pick quality from list              |
+| Ctrl-C | Copy channel name to the clipboard  |
 | Ctrl-F | Search categories (category screen) |
 | Esc    | Go back                             |
+
+### Chat
+
+| Key    | Action                              |
+|--------|-------------------------------------|
+| /      | Search                              |
+| p      | Pause chat scrolling                |
+| k      | Go up in the chat                   |
+| j      | Go down in the chat                 |

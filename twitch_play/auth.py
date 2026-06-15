@@ -4,12 +4,13 @@ import threading
 import time
 import urllib.parse
 import logging
+import requests
 from flask import Flask, request, Response
-
 from .config import CLIENT_ID
 
 REDIRECT_URI = "http://localhost:8765/callback"
 AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
+VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
 
 _JS_PAGE = """
 <script>
@@ -51,14 +52,28 @@ def login():
         "client_id": CLIENT_ID,
         "response_type": "token",
         "redirect_uri": REDIRECT_URI,
-        "scope": "user:read:email user:read:follows",
+        "scope": "user:read:email user:read:follows chat:read chat:edit",
         "state": secrets.token_urlsafe(16),
         "force_verify": "false",
     }
     webbrowser.open(AUTH_URL + "?" + urllib.parse.urlencode(params))
     print("Waiting for Twitch login in browser...")
-
     if not auth_event.wait(timeout=120):
         raise TimeoutError("Auth timed out after 120s")
-
     return {"access_token": auth_store["token"]}
+
+
+def strip_oauth(token: str) -> str:
+    if token.startswith("oauth:"):
+        return token[len("oauth:"):]
+    return token
+
+
+def get_username(token: str) -> str:
+    token = strip_oauth(token)
+    r = requests.get(
+        VALIDATE_URL,
+        headers={"Authorization": f"OAuth {token}"}
+    )
+    r.raise_for_status()
+    return r.json()["login"]
