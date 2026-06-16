@@ -60,6 +60,7 @@ def main():
                 title=stream.get("title", ""),
                 streamer=stream.get("user_name", ""),
                 quality=quality,
+                token=token_data["access_token"],
             )
 
 
