@@ -1,3 +1,4 @@
+# player.py
 import os
 import subprocess
 import threading
@@ -7,11 +8,13 @@ from streamlink import Streamlink
 from .chat import start_chat, render_chat, keyboard_listener
 from .auth import get_username, strip_oauth
 
+
 def play_channel(channel: str, title: str = "", streamer: str = "", quality: str = "best", token=None):
     session = Streamlink()
     print(f"Fetching stream for {channel} [{quality}]...")
     try:
-        streams = session.streams(f"twitch.tv/{channel}")
+        url = channel if channel.startswith("http") else f"twitch.tv/{channel}"
+        streams = session.streams(url)
     except Exception as e:
         print(f"Streamlink error: {e}")
         return
@@ -48,6 +51,8 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
         stdin=subprocess.PIPE,
     )
 
+    chat_channel = channel.rstrip("/").split("/")[-1].lower() if channel.startswith("http") else channel
+
     stop_event = threading.Event()
     chat_queue = queue.Queue()
     threads = []
@@ -64,24 +69,27 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
         if token and username:
             chat_state = {
                 "paused": False,
-                "scroll": 0,
                 "anchor": 0,
                 "total": 0,
                 "mode": "normal",
                 "search_query": "",
                 "search_active": False,
+                "selected": 0,
+                "copy_requested": False,
+                "flash_text": "",
+                "flash_until": 0,
             }
 
             t1 = threading.Thread(
                 target=start_chat,
-                args=(channel, strip_oauth(token), username, chat_queue, stop_event),
+                args=(chat_channel, strip_oauth(token), username, chat_queue, stop_event),
                 daemon=True,
             )
             t1.start()
 
             t2 = threading.Thread(
                 target=render_chat,
-                args=(chat_queue, stop_event, chat_state, channel, quality),
+                args=(chat_queue, stop_event, chat_state, chat_channel, quality),
                 daemon=True,
             )
             t2.start()

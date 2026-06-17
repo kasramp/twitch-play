@@ -1,10 +1,11 @@
-# chat.py
 import asyncio
 import ssl
 import sys
 import tty
 import termios
 import select
+import time
+import pyperclip
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -73,18 +74,6 @@ def start_chat(channel, token, username, queue, stop_event):
 
 
 def keyboard_listener(chat_state, stop_event):
-    """
-    Normal mode:
-      p = toggle pause
-      j/k = scroll down/up while paused
-      / = enter search mode
-    Search mode:
-      type to build query
-      Enter = apply filter, return to normal (filter stays active)
-      Escape = cancel search, resume normal
-    Normal mode while search_active:
-      p = clear search and resume
-    """
     fd = sys.stdin.fileno()
     try:
         old_settings = termios.tcgetattr(fd)
@@ -103,43 +92,40 @@ def keyboard_listener(chat_state, stop_event):
                 if ch in ("\r", "\n"):
                     chat_state["mode"] = "normal"
                     chat_state["search_active"] = bool(chat_state["search_query"])
-                    chat_state["scroll"] = 0
+                    chat_state["selected"] = 10**9
                 elif ch == "\x1b":
                     chat_state["mode"] = "normal"
                     chat_state["search_query"] = ""
                     chat_state["search_active"] = False
                     chat_state["paused"] = False
-                    chat_state["scroll"] = 0
                 elif ch in ("\x7f", "\x08"):
                     chat_state["search_query"] = chat_state["search_query"][:-1]
                 elif ch.isprintable():
                     chat_state["search_query"] += ch
                 continue
 
-            # normal mode
             if ch == "p":
                 if chat_state["search_active"]:
                     chat_state["search_active"] = False
                     chat_state["search_query"] = ""
                     chat_state["paused"] = False
-                    chat_state["scroll"] = 0
                 else:
                     chat_state["paused"] = not chat_state["paused"]
                     if chat_state["paused"]:
                         chat_state["anchor"] = chat_state["total"]
-                        chat_state["scroll"] = 0
-                    else:
-                        chat_state["scroll"] = 0
+                        chat_state["selected"] = 10**9
             elif ch == "/":
                 chat_state["mode"] = "search"
                 chat_state["search_query"] = ""
                 chat_state["paused"] = True
                 chat_state["anchor"] = chat_state["total"]
-                chat_state["scroll"] = 0
-            elif ch == "k" and chat_state["paused"]:
-                chat_state["scroll"] += 1
-            elif ch == "j" and chat_state["paused"]:
-                chat_state["scroll"] = max(0, chat_state["scroll"] - 1)
+                chat_state["selected"] = 10**9
+            elif ch == "k" and (chat_state["paused"] or chat_state["search_active"]):
+                chat_state["selected"] = max(0, chat_state["selected"] - 1)
+            elif ch == "j" and (chat_state["paused"] or chat_state["search_active"]):
+                chat_state["selected"] += 1
+            elif ch == "y" and (chat_state["paused"] or chat_state["search_active"]):
+                chat_state["copy_requested"] = True
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -155,60 +141,115 @@ def render_chat(queue, stop_event, chat_state, channel="", quality="best"):
     )
     header_lines = 3
 
-    messages = []
+    messages_plain = []
+    messages_rich = []
+
+    filter_cache = []
+    cache_key = (None, -1)
+
+    last_render_key = None
 
     with Live(console=console, refresh_per_second=10, screen=False) as live:
         while not stop_event.is_set():
+            time.sleep(0.05)  # ~20fps max, keeps CPU sane
+
             while not queue.empty():
                 user, text = queue.get()
-                messages.append(
-                    Text.assemble(
-                        (f"{user}: ", "bold cyan"),
-                        (text.strip(), "white"),
-                    )
+                plain = f"{user}: {text.strip()}".lower()
+                rich_text = Text.assemble(
+                    (f"{user}: ", "bold cyan"),
+                    (text.strip(), "white"),
                 )
+                messages_plain.append(plain)
+                messages_rich.append(rich_text)
 
-            total = len(messages)
+            total = len(messages_rich)
             chat_state["total"] = total
+
+            mode = chat_state["mode"]
+            search_active = chat_state["search_active"]
+            search_query = chat_state["search_query"]
+            anchor = chat_state["anchor"]
+            paused = chat_state["paused"]
+            raw_selected = chat_state["selected"]
+            copy_requested = chat_state.get("copy_requested", False)
+
+            interactive = paused or search_active
 
             panel_overhead = 2
             available = console.size.height - header_lines - panel_overhead
             visible_count = max(1, available)
 
-            mode = chat_state["mode"]
-            search_active = chat_state["search_active"]
-            search_query = chat_state["search_query"]
-
             if search_active and search_query:
-                pool = [
-                    m for m in messages[: chat_state["anchor"]]
-                    if search_query.lower() in m.plain.lower()
-                ]
+                key = (search_query, anchor)
+                if key != cache_key:
+                    q_lower = search_query.lower()
+                    filter_cache = [
+                        messages_rich[i]
+                        for i, p in enumerate(messages_plain[:anchor])
+                        if q_lower in p
+                    ]
+                    cache_key = key
+                pool = filter_cache
             else:
-                pool = messages
+                cache_key = (None, -1)
+                pool = messages_rich[:anchor] if interactive else messages_rich
 
             pool_total = len(pool)
 
-            if mode == "search":
-                status = f"/{search_query}\u2588"
-                border = "cyan"
+            selected = None
+            if interactive and pool_total > 0:
+                selected = max(0, min(raw_selected, pool_total - 1))
+                chat_state["selected"] = selected
+
+                # center view on selected
+                half = visible_count // 2
+                start = max(0, selected - half)
+                end = min(pool_total, start + visible_count)
+                start = max(0, end - visible_count)
+
+                if copy_requested:
+                    try:
+                        pyperclip.copy(pool[selected].plain)
+                        chat_state["flash_text"] = "Copied!"
+                    except Exception:
+                        chat_state["flash_text"] = "Copy failed"
+                    chat_state["flash_until"] = time.time() + 1.5
+                    chat_state["copy_requested"] = False
+            else:
+                start = max(0, pool_total - visible_count)
                 end = pool_total
-            elif search_active:
-                status = f"[search: {search_query}] (j/k scroll, p clear)"
+
+            flash = ""
+            if time.time() < chat_state.get("flash_until", 0):
+                flash = f"  {chat_state['flash_text']}"
+
+            if mode == "search":
+                status = f"/{search_query}\u2588{flash}"
                 border = "cyan"
-                end = max(0, min(chat_state["anchor"], pool_total) - chat_state["scroll"])
-            elif chat_state["paused"]:
-                status = f"[PAUSED — j/k scroll, p resume, / search] ({chat_state['scroll']} back)"
+            elif search_active:
+                status = f"[search: {search_query}] j/k move, y copy, p clear{flash}"
+                border = "cyan"
+            elif paused:
+                status = f"[PAUSED] j/k move, y copy, p resume, / search{flash}"
                 border = "yellow"
-                end = max(0, min(chat_state["anchor"], pool_total) - chat_state["scroll"])
             else:
                 status = "[p pause, / search]"
                 border = "magenta"
-                end = pool_total
 
-            start = max(0, end - visible_count)
+            render_key = (start, end, selected, mode, search_query, border, flash)
+            if render_key == last_render_key:
+                continue
+            last_render_key = render_key
+
             if pool_total:
-                visible = pool[start:end]
+                visible = []
+                for i in range(start, end):
+                    t = pool[i]
+                    if selected is not None and i == selected:
+                        t = t.copy()
+                        t.stylize("reverse")
+                    visible.append(t)
             elif search_active and search_query:
                 visible = [Text("(no matches)", style="dim italic")]
             else:
