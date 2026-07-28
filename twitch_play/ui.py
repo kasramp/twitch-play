@@ -3,6 +3,14 @@ from pyfzf.pyfzf import FzfPrompt
 
 fzf = FzfPrompt()
 
+QUALITY_MAP = {
+    "ctrl-l": "480p",
+    "ctrl-h": "720p",
+    "ctrl-b": "best",
+    "ctrl-o": "pick",
+    "":       "best",
+}
+
 
 def _pick(lines, flags=""):
     if not lines:
@@ -18,7 +26,7 @@ def _pick_with_expect(lines, flags=""):
     if not lines:
         return "", None
     try:
-        result = fzf.prompt(lines, f"--no-sort --no-info --delimiter='\t' --with-nth=1 --layout=default --expect=ctrl-f {flags}")
+        result = fzf.prompt(lines, f"--no-sort --no-info --delimiter='\t' --with-nth=1 --layout=default --expect=ctrl-f,ctrl-o {flags}")
         if not result:
             return "", None
         key = result[0] if len(result) > 0 else ""
@@ -30,25 +38,23 @@ def _pick_with_expect(lines, flags=""):
 
 def pick_category(api):
     search_query = None
-
     while True:
         if search_query:
             cats = api.search_categories(search_query)
             flags = (
                 f'--prompt="Search: {search_query} > "'
-                ' --header="[ Enter ] select   [ Ctrl-F ] new search   [ Esc ] back to top categories"'
+                ' --header="[ Enter ] select   [ Ctrl-F ] new search   [ Ctrl-O ] open URL   [ Esc ] back to top categories"'
                 ' --layout=reverse'
             )
         else:
             cats = api.top_categories(100)
             flags = (
                 '--prompt="Category > "'
-                ' --header="[ Enter ] select   [ Ctrl-F ] search Twitch   [ Esc ] quit"'
+                ' --header="[ Enter ] select   [ Ctrl-F ] search Twitch   [ Ctrl-O ] open URL   [ Esc ] quit"'
                 ' --layout=reverse'
             )
 
         lines = [f"{c['name']}\t{c['id']}" for c in cats] if cats else []
-
         if not lines:
             print("No results.")
             search_query = None
@@ -66,6 +72,38 @@ def pick_category(api):
                 search_query = query
             continue
 
+        if key == "ctrl-o":
+            try:
+                clipboard = pyperclip.paste().strip()
+            except Exception:
+                clipboard = ""
+            try:
+                result = fzf.prompt(
+                    [],
+                    '--print-query'
+                    ' --prompt="URL > "'
+                    ' --layout=reverse'
+                    ' --no-info'
+                    ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Esc ] cancel"'
+                    ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o'
+                    + (f' --query="{clipboard}"' if clipboard else ""),
+                )
+                # --print-query + --expect: result[0]=query, result[1]=key
+                if not result:
+                    url, quality_key = "", ""
+                elif len(result) >= 2:
+                    url = result[0].strip()
+                    quality_key = result[1]
+                else:
+                    url = result[0].strip()
+                    quality_key = ""
+            except (Exception, SystemExit):
+                url, quality_key = "", ""
+
+            if url:
+                return {"url": url, "quality": QUALITY_MAP.get(quality_key, "best")}
+            continue
+
         if selected and "\t" in selected:
             name, cat_id = selected.split("\t", 1)
             return {"name": name, "id": cat_id}
@@ -79,8 +117,7 @@ def pick_category(api):
 
 def pick_stream(streams):
     if not streams:
-        return None
-
+        return None, None
     lines = [
         f"{s['user_name']:20s} {s['viewer_count']:>7,} viewers  {s.get('title', '')[:50]}\t{s['user_login']}"
         for s in streams
@@ -92,7 +129,7 @@ def pick_stream(streams):
                 '--no-sort --no-info --delimiter="\t" --with-nth=1 --layout=reverse'
                 ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o,ctrl-c'
                 ' --prompt="Stream > "'
-                ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Esc ] back"',
+                ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Ctrl-C ] copy URL   [ Esc ] back"',
             )
         except (Exception, SystemExit):
             return None, None
@@ -115,15 +152,7 @@ def pick_stream(streams):
             print(f"Copied: {url}")
             continue
 
-        quality_map = {
-            "ctrl-l": "480p",
-            "ctrl-h": "720p",
-            "ctrl-b": "best",
-            "ctrl-o": "pick",
-            "":       "best",
-        }
-        quality = quality_map.get(key, "best")
-
+        quality = QUALITY_MAP.get(key, "best")
         return stream, quality
 
 
