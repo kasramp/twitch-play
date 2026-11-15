@@ -8,6 +8,7 @@ A minimal Twitch CLI app built on top of mpv, streamlink, and fzf.
 - [mpv](https://mpv.io)
 - [streamlink](https://streamlink.github.io)
 - [fzf](https://github.com/junegunn/fzf)
+- A clipboard tool for copying: [xclip](https://github.com/astrand/xclip) (X11) or [wl-clipboard](https://github.com/bugaevc/wl-clipboard) (Wayland)
 
 ## Installation
 
