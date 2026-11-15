@@ -1,7 +1,5 @@
+import subprocess
 import pyperclip
-from pyfzf.pyfzf import FzfPrompt
-
-fzf = FzfPrompt()
 
 QUALITY_MAP = {
     "ctrl-l": "480p",
@@ -10,161 +8,138 @@ QUALITY_MAP = {
     "ctrl-o": "pick",
     "":       "best",
 }
+QUALITY_KEYS = "--expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o"
+QUALITY_HELP = "[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality"
+# list pickers show only the text before the tab; the id after it comes back with the selection
+LIST_OPTIONS = ("--no-sort", "--delimiter=\t", "--with-nth=1")
 
 
-def _pick(lines, flags=""):
-    if not lines:
-        return None
+def fzf(lines, *options):
+    """Run fzf on `lines` and return its output lines, or [] when cancelled with Esc.
+
+    fzf is started without a shell: options can carry clipboard or typed text.
+    """
+    result = subprocess.run(
+        ["fzf", "--no-info", "--layout=reverse", *options],
+        input="\n".join(lines),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode not in (0, 1):  # 1 = nothing matched, which still prints --print-query/--expect lines
+        return []
+    return result.stdout.splitlines()
+
+
+def pause(message):
+    """Show a message until Enter, so the next fzf screen doesn't wipe it straight away."""
+    print(message)
+    input("Press Enter to go back...")
+
+
+def _ask_search():
+    out = fzf([], "--print-query", "--prompt=Search> ")
+    return out[0].strip() if out else ""
+
+
+def _ask_url():
+    """The URL prompt, prefilled from the clipboard. Returns {"url", "quality"} or None."""
     try:
-        result = fzf.prompt(lines, f"--no-sort --no-info --delimiter='\t' --with-nth=1 --layout=default {flags}")
-        return result[0] if result else None
-    except (Exception, SystemExit):
+        clipboard = pyperclip.paste().strip()
+    except Exception:  # no clipboard tool, or its subprocess failed
+        clipboard = ""
+    out = fzf(
+        [],
+        "--print-query",
+        "--prompt=URL > ",
+        f"--header={QUALITY_HELP}   [ Esc ] cancel",
+        QUALITY_KEYS,
+        f"--query={clipboard.splitlines()[0] if clipboard else ''}",
+    )
+    # --print-query + --expect: out[0] = query, out[1] = key
+    url = out[0].strip() if out else ""
+    if not url:
         return None
-
-
-def _pick_with_expect(lines, flags=""):
-    if not lines:
-        return "", None
-    try:
-        result = fzf.prompt(lines, f"--no-sort --no-info --delimiter='\t' --with-nth=1 --layout=default --expect=ctrl-f,ctrl-o {flags}")
-        if not result:
-            return "", None
-        key = result[0] if len(result) > 0 else ""
-        item = result[1] if len(result) > 1 else None
-        return key, item
-    except (Exception, SystemExit):
-        return "", None
+    return {"url": url, "quality": QUALITY_MAP.get(out[1] if len(out) > 1 else "", "best")}
 
 
 def pick_category(api):
-    search_query = None
+    """Top or searched categories. Returns {"name", "id"}, {"url", "quality"} (Ctrl-O), or None to quit."""
+    query = None
     while True:
-        if search_query:
-            cats = api.search_categories(search_query)
-            flags = (
-                f'--prompt="Search: {search_query} > "'
-                ' --header="[ Enter ] select   [ Ctrl-F ] new search   [ Ctrl-O ] open URL   [ Esc ] back to top categories"'
-                ' --layout=reverse'
-            )
+        cats = api.search_categories(query) if query else api.top_categories()
+        if not cats:
+            if not query:
+                pause("Twitch returned no categories.")
+                return None
+            pause(f"No categories match '{query}'.")
+            query = None
+            continue
+
+        if query:
+            prompt, ctrl_f, esc = f"Search: {query} > ", "new search", "back to top categories"
         else:
-            cats = api.top_categories(100)
-            flags = (
-                '--prompt="Category > "'
-                ' --header="[ Enter ] select   [ Ctrl-F ] search Twitch   [ Ctrl-O ] open URL   [ Esc ] quit"'
-                ' --layout=reverse'
-            )
-
-        lines = [f"{c['name']}\t{c['id']}" for c in cats] if cats else []
-        if not lines:
-            print("No results.")
-            search_query = None
-            continue
-
-        key, selected = _pick_with_expect(lines, flags)
-
-        if key == "ctrl-f":
-            try:
-                result = fzf.prompt([], "--print-query --prompt='Search> ' --layout=reverse --no-info")
-                query = result[0].strip() if result else ""
-            except (Exception, SystemExit):
-                continue
+            prompt, ctrl_f, esc = "Category > ", "search Twitch", "quit"
+        out = fzf(
+            [f"{c['name']}\t{c['id']}" for c in cats],
+            *LIST_OPTIONS,
+            "--expect=ctrl-f,ctrl-o",
+            f"--prompt={prompt}",
+            f"--header=[ Enter ] select   [ Ctrl-F ] {ctrl_f}   [ Ctrl-O ] open URL   [ Esc ] {esc}",
+        )
+        if not out:  # Esc
             if query:
-                search_query = query
-            continue
+                query = None
+                continue
+            return None
 
-        if key == "ctrl-o":
-            try:
-                clipboard = pyperclip.paste().strip()
-            except Exception:
-                clipboard = ""
-            try:
-                result = fzf.prompt(
-                    [],
-                    '--print-query'
-                    ' --prompt="URL > "'
-                    ' --layout=reverse'
-                    ' --no-info'
-                    ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Esc ] cancel"'
-                    ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o'
-                    + (f' --query="{clipboard}"' if clipboard else ""),
-                )
-                # --print-query + --expect: result[0]=query, result[1]=key
-                if not result:
-                    url, quality_key = "", ""
-                elif len(result) >= 2:
-                    url = result[0].strip()
-                    quality_key = result[1]
-                else:
-                    url = result[0].strip()
-                    quality_key = ""
-            except (Exception, SystemExit):
-                url, quality_key = "", ""
-
-            if url:
-                return {"url": url, "quality": QUALITY_MAP.get(quality_key, "best")}
-            continue
-
-        if selected and "\t" in selected:
-            name, cat_id = selected.split("\t", 1)
+        key, selected = out[0], out[1] if len(out) > 1 else ""
+        if key == "ctrl-f":
+            query = _ask_search() or query
+        elif key == "ctrl-o":
+            choice = _ask_url()
+            if choice:
+                return choice
+        elif "\t" in selected:
+            name, cat_id = selected.rsplit("\t", 1)
             return {"name": name, "id": cat_id}
-
-        if search_query:
-            search_query = None
-            continue
-
-        return None
 
 
 def pick_stream(streams):
-    if not streams:
-        return None, None
+    """Returns (stream, quality), or (None, None) to go back. Ctrl-C copies the stream URL and stays."""
     lines = [
-        f"{s['user_name']:20s} {s['viewer_count']:>7,} viewers  {s.get('title', '')[:50]}\t{s['user_login']}"
+        # titles are free text: flatten tabs/newlines so they can't break the line format
+        f"{s['user_name']:20s} {s['viewer_count']:>7,} viewers  {' '.join(s.get('title', '').split())[:50]}"
+        f"\t{s['user_login']}"
         for s in streams
     ]
+    copied = ""
     while True:
-        try:
-            result = fzf.prompt(
-                lines,
-                '--no-sort --no-info --delimiter="\t" --with-nth=1 --layout=reverse'
-                ' --expect=ctrl-l,ctrl-h,ctrl-b,ctrl-o,ctrl-c'
-                ' --prompt="Stream > "'
-                ' --header="[ Enter ] best   [ Ctrl-L ] 480p   [ Ctrl-H ] 720p   [ Ctrl-B ] best   [ Ctrl-O ] pick quality   [ Ctrl-C ] copy URL   [ Esc ] back"',
-            )
-        except (Exception, SystemExit):
+        out = fzf(
+            lines,
+            *LIST_OPTIONS,
+            QUALITY_KEYS + ",ctrl-c",
+            "--prompt=Stream > ",
+            f"--header={QUALITY_HELP}   [ Ctrl-C ] copy URL   [ Esc ] back{copied}",
+        )
+        if len(out) < 2 or "\t" not in out[1]:
             return None, None
 
-        if not result:
-            return None, None
-
-        key = result[0] if len(result) > 0 else ""
-        selected = result[1] if len(result) > 1 else None
-
-        if not selected or "\t" not in selected:
-            return None, None
-
-        _, user_login = selected.rsplit("\t", 1)
-        stream = next((s for s in streams if s["user_login"] == user_login), None)
-
+        key, user_login = out[0], out[1].rsplit("\t", 1)[1]
         if key == "ctrl-c":
             url = f"https://twitch.tv/{user_login}"
             try:
                 pyperclip.copy(url)
-                print(f"Copied: {url}")
-            except pyperclip.PyperclipException:
-                print(f"Could not copy {url}: install xclip or xsel (X11) or wl-clipboard (Wayland).")
-                input("Press Enter to go back...")
+                copied = f"\nCopied {url}"  # shown in the header, since fzf redraws over printed text
+            except Exception:  # no clipboard tool, or its subprocess failed
+                pause(f"Could not copy {url}: install xclip or xsel (X11) or wl-clipboard (Wayland).")
             continue
 
-        quality = QUALITY_MAP.get(key, "best")
-        return stream, quality
+        stream = next(s for s in streams if s["user_login"] == user_login)
+        return stream, QUALITY_MAP.get(key, "best")
 
 
 def pick_quality(qualities):
     if not qualities:
         return None
-    selected = _pick(
-        qualities,
-        '--prompt="Quality > " --layout=reverse --header="[ Enter ] select   [ Esc ] cancel"',
-    )
-    return selected or None
+    out = fzf(qualities, "--no-sort", "--prompt=Quality > ", "--header=[ Enter ] select   [ Esc ] cancel")
+    return out[0] if out else None
