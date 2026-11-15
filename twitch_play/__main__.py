@@ -51,7 +51,9 @@ def main():
                     continue
                 if quality == "pick":
                     available = [q for q in streams.keys() if q not in ("worst", "best")]
-                    quality = pick_quality(available) or "best"
+                    quality = pick_quality(available)
+                    if not quality:
+                        continue
             except Exception as e:
                 print(f"Could not open {url}: {e}")
                 input("Press Enter to go back...")
@@ -73,7 +75,9 @@ def main():
                 session = Streamlink()
                 sl_streams = session.streams(f"twitch.tv/{stream['user_login']}")
                 available = [q for q in sl_streams.keys() if q not in ("worst", "best")]
-                quality = pick_quality(available) or "best"
+                quality = pick_quality(available)
+                if not quality:
+                    continue
             play_channel(
                 stream["user_login"],
                 title=stream.get("title", ""),
