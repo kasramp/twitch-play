@@ -1,6 +1,13 @@
+import io
 import unittest
 
-from twitch_play.chat import ChatView, parse_privmsg, split_keys
+from rich.cells import cell_len
+from rich.console import Console, Group
+from rich.text import Text
+
+from twitch_play.chat import (
+    MAX_CHAT_MESSAGE, ChatView, Overlay, message_box, parse_notice, parse_privmsg, split_keys,
+)
 
 
 def one_line(_text):
@@ -35,7 +42,9 @@ class ParsePrivmsgTest(unittest.TestCase):
 
 class SplitKeysTest(unittest.TestCase):
     def test_plain_and_named(self):
-        self.assertEqual(split_keys("ab\r\x7f"), ["a", "b", "enter", "backspace"])
+        self.assertEqual(split_keys("ab\x7f"), ["a", "b", "backspace"])
+        self.assertEqual(split_keys("\r"), ["enter"])
+        self.assertEqual(split_keys("\n"), ["enter"])
 
     def test_arrows(self):
         self.assertEqual(split_keys("\x1b[A\x1b[B\x1bOA\x1bOB"), ["up", "down", "up", "down"])
@@ -43,6 +52,10 @@ class SplitKeysTest(unittest.TestCase):
     def test_esc_alone(self):
         self.assertEqual(split_keys("\x1b"), ["esc"])
         self.assertEqual(split_keys("\x1bp"), ["esc", "p"])
+
+    def test_paste_with_newlines_is_text(self):
+        self.assertEqual(split_keys("ab\ncd p"), list("ab cd p"))
+        self.assertEqual(split_keys("x\r\ny"), list("x y"))
 
     def test_other_sequences_ignored(self):
         self.assertEqual(split_keys("\x1b[C\x1b[D\x1b[3~x"), ["x"])
@@ -182,6 +195,91 @@ class ChatViewTest(unittest.TestCase):
         view.handle_key("p")
         view.handle_key("k")
         self.assertEqual(view.handle_key("y"), ("copy", "Alice: Hi There"))
+
+
+class ParseNoticeTest(unittest.TestCase):
+    def test_notice(self):
+        line = ":tmi.twitch.tv NOTICE #chan :This room is in followers-only mode."
+        self.assertEqual(parse_notice(line), "This room is in followers-only mode.")
+
+    def test_other_lines(self):
+        self.assertIsNone(parse_notice(":alice!a@a PRIVMSG #chan :NOTICE me"))
+        self.assertIsNone(parse_notice(":tmi.twitch.tv CAP * ACK :twitch.tv/commands"))
+
+
+class ComposeTest(unittest.TestCase):
+    def type_keys(self, view, keys):
+        result = None
+        for key in keys:
+            result = view.handle_key(key)
+        return result
+
+    def test_send(self):
+        view = view_with(2)
+        self.assertEqual(self.type_keys(view, ["i", *"hi kp/", "enter"]), ("send", "hi kp/"))
+        self.assertEqual((view.mode, view.draft), ("normal", ""))
+
+    def test_command_keys_are_text_while_writing(self):
+        view = view_with(2)
+        self.type_keys(view, ["i", "p", "/", "y", "k"])
+        self.assertEqual(view.draft, "p/yk")
+        self.assertFalse(view.paused)
+
+    def test_backspace_and_esc(self):
+        view = view_with(2)
+        self.type_keys(view, ["i", "a", "b", "backspace"])
+        self.assertEqual(view.draft, "a")
+        self.assertIsNone(view.handle_key("esc"))
+        self.assertEqual((view.mode, view.draft), ("normal", ""))
+
+    def test_blank_message_not_sent(self):
+        view = view_with(2)
+        self.assertIsNone(self.type_keys(view, ["i", " ", " ", "enter"]))
+        self.assertEqual(view.mode, "normal")
+
+    def test_length_capped(self):
+        view = view_with(1)
+        self.type_keys(view, ["i", *("x" * (MAX_CHAT_MESSAGE + 10))])
+        self.assertEqual(len(view.draft), MAX_CHAT_MESSAGE)
+
+    def test_writing_while_paused_keeps_pause(self):
+        view = view_with(3)
+        self.type_keys(view, ["p", "k", "i", "x", "enter"])
+        self.assertTrue(view.paused)
+        self.assertEqual(view.selected, 1)
+
+    def test_notice_shown_and_searchable(self):
+        view = view_with(2)
+        view.add_notice("You are banned")
+        self.type_keys(view, ["/", *"banned"])
+        self.assertEqual([t.plain for t in view.window(5, one_line)[0]], ["You are banned"])
+
+
+class OverlayTest(unittest.TestCase):
+    def render(self, base_text, draft, width=50, box_width=30):
+        console = Console(width=width, height=12, record=True, file=io.StringIO())
+        base = Group(*[Text(base_text) for _ in range(10)])
+        console.print(Overlay(base, message_box(console, draft, "chan", box_width), box_width))
+        return console.export_text().splitlines()
+
+    def test_box_centred_over_base(self):
+        lines = self.render("x" * 50, "hello")
+        box_rows = [i for i, line in enumerate(lines) if "Message #chan" in line]
+        self.assertEqual(box_rows, [3])  # 3-line box centred in 10 lines
+        self.assertTrue(lines[4].startswith("x" * 10 + "│ hello"))
+        self.assertTrue(lines[4].endswith("x" * 10))
+        self.assertEqual(lines[0], "x" * 50)
+
+    def test_wide_characters_keep_alignment(self):
+        # box_width 29 puts the right cut at cell 39, inside a wide character
+        for line in self.render("😀日" * 25, "hi", box_width=29):
+            self.assertEqual(cell_len(line), 50)
+
+    def test_long_draft_shows_its_end(self):
+        lines = self.render("x" * 50, "word " * 60 + "END")
+        box = [line for line in lines if "│" in line]
+        self.assertEqual(len(box), 5)
+        self.assertTrue(any("END" in line for line in box))
 
 
 if __name__ == "__main__":

@@ -71,3 +71,4 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 | k / Up   | Go up in the chat                 |
 | j / Down | Go down in the chat               |
 | y      | Copy the selected message         |
+| i      | Write a chat message (Enter to send, Esc to cancel) |

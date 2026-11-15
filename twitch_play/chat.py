@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import os
 import queue
 import ssl
@@ -12,12 +13,15 @@ import pyperclip
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.text import Text
 
 MAX_MESSAGES = 5000
 FRAME = 1 / 30  # redraw at most 30 times a second
 FLASH_SECONDS = 1.5
 MAX_CHAT_MESSAGE = 500  # Twitch's limit per message
+MESSAGE_BOX_WIDTH = 70
+MESSAGE_BOX_LINES = 5  # longer drafts scroll, showing their end
 
 KEY_NAMES = {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\x08": "backspace"}
 ARROWS = {"\x1b[A": "up", "\x1b[B": "down", "\x1bOA": "up", "\x1bOB": "down"}
@@ -46,6 +50,9 @@ def parse_notice(line):
 
 def split_keys(data):
     """Split raw terminal input into key names: 'up', 'esc', 'enter', ... or the character itself."""
+    if len(data) > 1 and ("\r" in data or "\n" in data):
+        # several characters with a newline in one read is a paste: keep it as text, not Enter + hotkeys
+        data = data.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
     keys = []
     i = 0
     while i < len(data):
@@ -278,6 +285,10 @@ def start_chat(channel, token, username, events, outgoing, stop_event):
     except Exception:
         import traceback
         traceback.print_exc()
+    finally:
+        if not stop_event.is_set():
+            # sent messages would otherwise look delivered while going nowhere
+            events.put(("notice", "Disconnected from chat; messages can't be sent"))
 
 
 def keyboard_listener(events, stop_event):
@@ -287,6 +298,8 @@ def keyboard_listener(events, stop_event):
     except termios.error:
         return
 
+    # keeps a UTF-8 character split across two reads (long pastes) instead of dropping it
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     try:
         tty.setcbreak(fd)
         while not stop_event.is_set():
@@ -297,23 +310,61 @@ def keyboard_listener(events, stop_event):
             data = os.read(fd, 1024)
             if not data:
                 break
-            for key in split_keys(data.decode(errors="ignore")):
+            for key in split_keys(decoder.decode(data)):
                 events.put(("key", key))
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
-def _status(view, flash, width):
+class Overlay:
+    """Draws `box` centred on top of `base`. rich has no layers, so this pastes the box's lines over the base's."""
+
+    def __init__(self, base, box, box_width):
+        self.base = base
+        self.box = box
+        self.box_width = box_width
+
+    def __rich_console__(self, console, options):
+        width = options.max_width
+        box_width = min(self.box_width, width)
+        base_lines = console.render_lines(self.base, options, pad=True)
+        box_lines = console.render_lines(self.box, options.update_width(box_width), pad=True)
+        top = max(0, (len(base_lines) - len(box_lines)) // 2)
+        left = (width - box_width) // 2
+        for i, line in enumerate(base_lines):
+            if top <= i < top + len(box_lines):
+                # divide() pads a wide character cut in half, so the columns stay aligned
+                before, _, after = Segment.divide(line, [left, left + box_width, width])
+                line = before + box_lines[i - top] + after
+            yield from line
+            yield Segment.line()
+
+
+def message_box(console, draft, channel, width):
+    """The input box shown while writing a chat message; long drafts wrap and show their last lines."""
+    lines = Text(draft + "\u2588").wrap(console, max(1, width - 4))
+    return Panel(
+        Group(*lines[-MESSAGE_BOX_LINES:]),
+        title=f"Message #{channel}",
+        title_align="left",
+        subtitle=f"{len(draft)}/{MAX_CHAT_MESSAGE}  Enter send, Esc cancel",
+        subtitle_align="right",
+        border_style="green",
+        padding=(0, 1),
+        width=width,
+    )
+
+
+def _status(view, flash):
     if view.mode == "compose":
-        # show the end of a long draft, where the cursor is
-        return f"say: {view.draft[-max(1, width - 16):]}\u2588  Enter send, Esc cancel", "green"
+        return "[writing a message]", "green"
     if view.mode == "search":
         return f"/{view.query}█{flash}", "cyan"
     if view.search_active:
         return f"[search: {view.query}] j/k move, y copy, p clear{flash}", "cyan"
     if view.paused:
         return f"[PAUSED] j/k move, y copy, p resume, / search{flash}", "yellow"
-    return "[i chat, p pause, / search]", "magenta"
+    return f"[i chat, p pause, / search]{flash}", "magenta"
 
 
 def render_chat(events, outgoing, stop_event, username, channel="", quality="best"):
@@ -358,6 +409,8 @@ def render_chat(events, outgoing, stop_event, username, channel="", quality="bes
                 if what == "send":
                     outgoing.put(text)
                     view.add(username, text)  # Twitch doesn't echo our own messages back
+                    flash_text = "Sent"  # visible even while paused, when the new line is not
+                    flash_until = time.monotonic() + FLASH_SECONDS
                     continue
                 try:
                     pyperclip.copy(text)
@@ -371,7 +424,7 @@ def render_chat(events, outgoing, stop_event, username, channel="", quality="bes
             if not batch and (flash, width, height) == last_shown:
                 continue
             last_shown = (flash, width, height)
-            status, border = _status(view, flash, width)
+            status, border = _status(view, flash)
 
             inner_width = max(1, width - 4)  # panel border + padding
             visible_count = max(1, height - header_lines - 2)
@@ -394,5 +447,9 @@ def render_chat(events, outgoing, stop_event, username, channel="", quality="bes
                 padding=(0, 1),
                 height=visible_count + 2,
             )
-            live.update(Group(header, panel), refresh=True)
+            screen = Group(header, panel)
+            if view.mode == "compose":
+                box_width = max(10, min(MESSAGE_BOX_WIDTH, width - 4))
+                screen = Overlay(screen, message_box(console, view.draft, channel, box_width), box_width)
+            live.update(screen, refresh=True)
             last_draw = time.monotonic()
