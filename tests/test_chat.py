@@ -181,7 +181,7 @@ class ChatViewTest(unittest.TestCase):
         view.add("bob", "second")
         view.handle_key("p")
         view.handle_key("k")
-        self.assertEqual(view.handle_key("y"), "Alice: Hi There")
+        self.assertEqual(view.handle_key("y"), ("copy", "Alice: Hi There"))
 
 
 if __name__ == "__main__":

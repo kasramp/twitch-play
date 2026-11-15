@@ -55,6 +55,7 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
 
     stop_event = threading.Event()
     chat_events = queue.Queue()
+    chat_outgoing = queue.Queue()
     threads = []
 
     def stop_when_mpv_exits():
@@ -76,14 +77,14 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
         if token and username:
             t1 = threading.Thread(
                 target=start_chat,
-                args=(chat_channel, strip_oauth(token), username, chat_events, stop_event),
+                args=(chat_channel, strip_oauth(token), username, chat_events, chat_outgoing, stop_event),
                 daemon=True,
             )
             t1.start()
 
             t2 = threading.Thread(
                 target=render_chat,
-                args=(chat_events, stop_event, chat_channel, quality),
+                args=(chat_events, chat_outgoing, stop_event, username, chat_channel, quality),
                 daemon=True,
             )
             t2.start()
