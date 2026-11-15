@@ -85,7 +85,7 @@ class ChatView:
         return self.paused or self.search_active
 
     def pool(self):
-        if self.search_active:
+        if self.search_active or self.mode == "search":
             return self.matches
         if self.paused:
             return self.frozen
@@ -95,6 +95,12 @@ class ChatView:
         self.paused = True
         self.frozen = list(self.messages)
         self.selected = len(self.frozen) - 1
+
+    def _filter(self):
+        # runs on every typed key; ~1 ms for a full history even on old laptops
+        q = self.query.lower()
+        self.matches = [m for m in self.frozen if q in m[0]] if q else self.frozen
+        self.selected = len(self.matches) - 1
 
     def _clear_search(self):
         self.query = ""
@@ -107,17 +113,15 @@ class ChatView:
             if key == "enter":
                 self.mode = "normal"
                 self.search_active = bool(self.query)
-                if self.search_active:
-                    q = self.query.lower()
-                    self.matches = [m for m in self.frozen if q in m[0]]
-                    self.selected = len(self.matches) - 1
             elif key == "esc":
                 self.mode = "normal"
                 self._clear_search()
             elif key == "backspace":
                 self.query = self.query[:-1]
+                self._filter()
             elif len(key) == 1 and key.isprintable():
                 self.query += key
+                self._filter()
             return None
 
         if key == "p":
@@ -132,6 +136,7 @@ class ChatView:
             self.search_active = False
             self.query = ""
             self._freeze()
+            self._filter()
         elif self.interactive and key in ("k", "up"):
             self.selected = max(0, self.selected - 1)
         elif self.interactive and key in ("j", "down"):
@@ -323,7 +328,7 @@ def render_chat(events, stop_event, channel="", quality="best"):
             if selected is not None:
                 visible[selected] = visible[selected].copy()
                 visible[selected].stylize("reverse")
-            if not visible and view.search_active:
+            if not visible and view.query:
                 visible = [Text("(no matches)", style="dim italic")]
 
             panel = Panel(

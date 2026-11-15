@@ -66,7 +66,7 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 
 | Key    | Action                              |
 |--------|-------------------------------------|
-| /      | Search (Enter to apply, Esc to cancel) |
+| /      | Search as you type (Enter to browse the results, Esc to cancel) |
 | p      | Pause chat scrolling, or clear the search |
 | k / Up   | Go up in the chat                 |
 | j / Down | Go down in the chat               |

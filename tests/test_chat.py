@@ -128,6 +128,33 @@ class ChatViewTest(unittest.TestCase):
         self.assertEqual(view.query, "xpk")
         self.assertEqual(view.mode, "search")
 
+    def test_search_filters_while_typing(self):
+        view = ChatView()
+        view.add("alice", "cats")
+        view.add("bob", "dogs")
+        view.add("carol", "cars")
+        view.handle_key("/")
+        self.assertEqual(len(view.window(10, one_line)[0]), 3)  # empty query shows everything
+        view.handle_key("c")
+        view.handle_key("a")
+        self.assertEqual(names(view.window(10, one_line)[0]), ["alice", "carol"])
+        view.handle_key("t")
+        visible, selected = view.window(10, one_line)
+        self.assertEqual((names(visible), selected), (["alice"], 0))
+        view.handle_key("backspace")
+        self.assertEqual(names(view.window(10, one_line)[0]), ["alice", "carol"])
+        view.handle_key("enter")
+        self.assertTrue(view.search_active)
+        self.assertEqual(names(view.window(10, one_line)[0]), ["alice", "carol"])
+
+    def test_search_empty_enter_stays_paused(self):
+        view = view_with(3)
+        for key in ["/", "enter"]:
+            view.handle_key(key)
+        self.assertTrue(view.paused)
+        self.assertFalse(view.search_active)
+        self.assertEqual(view.selected, 2)
+
     def test_search_esc_resumes_live(self):
         view = view_with(3)
         for key in ["/", "u", "esc"]:
