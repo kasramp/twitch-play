@@ -54,8 +54,15 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
     chat_channel = channel.rstrip("/").split("/")[-1].lower() if channel.startswith("http") else channel
 
     stop_event = threading.Event()
-    chat_queue = queue.Queue()
+    chat_events = queue.Queue()
     threads = []
+
+    def stop_when_mpv_exits():
+        mpv.wait()
+        stop_event.set()
+        fd.close()  # wakes up the fd.read() below, which may wait seconds for the next segment
+
+    threading.Thread(target=stop_when_mpv_exits, daemon=True).start()
 
     if token:
         username = None
@@ -67,36 +74,23 @@ def play_channel(channel: str, title: str = "", streamer: str = "", quality: str
             token = None
 
         if token and username:
-            chat_state = {
-                "paused": False,
-                "anchor": 0,
-                "total": 0,
-                "mode": "normal",
-                "search_query": "",
-                "search_active": False,
-                "selected": 0,
-                "copy_requested": False,
-                "flash_text": "",
-                "flash_until": 0,
-            }
-
             t1 = threading.Thread(
                 target=start_chat,
-                args=(chat_channel, strip_oauth(token), username, chat_queue, stop_event),
+                args=(chat_channel, strip_oauth(token), username, chat_events, stop_event),
                 daemon=True,
             )
             t1.start()
 
             t2 = threading.Thread(
                 target=render_chat,
-                args=(chat_queue, stop_event, chat_state, chat_channel, quality),
+                args=(chat_events, stop_event, chat_channel, quality),
                 daemon=True,
             )
             t2.start()
 
             t3 = threading.Thread(
                 target=keyboard_listener,
-                args=(chat_state, stop_event),
+                args=(chat_events, stop_event),
                 daemon=True,
             )
             t3.start()

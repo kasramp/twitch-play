@@ -67,5 +67,5 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 |--------|-------------------------------------|
 | /      | Search                              |
 | p      | Pause chat scrolling                |
-| k      | Go up in the chat                   |
-| j      | Go down in the chat                 |
+| k / Up   | Go up in the chat                 |
+| j / Down | Go down in the chat               |
