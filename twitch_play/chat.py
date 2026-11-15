@@ -223,7 +223,7 @@ class ChatView:
 class TwitchChatClient:
     def __init__(self, channel, token, username, events, outgoing, stop_event):
         self.channel = channel.lower()
-        self.token = token[len("oauth:"):] if token.startswith("oauth:") else token
+        self.token = token
         self.username = username
         self.events = events
         self.outgoing = outgoing  # chat messages to send, filled by the render thread
@@ -282,9 +282,8 @@ def start_chat(channel, token, username, events, outgoing, stop_event):
         asyncio.run(
             TwitchChatClient(channel, token, username, events, outgoing, stop_event).run()
         )
-    except Exception:
-        import traceback
-        traceback.print_exc()
+    except Exception as e:  # shown in the chat; a traceback would scramble the live display
+        events.put(("notice", f"Chat error: {e}"))
     finally:
         if not stop_event.is_set():
             # sent messages would otherwise look delivered while going nowhere
@@ -371,12 +370,8 @@ def render_chat(events, outgoing, stop_event, username, channel="", quality="bes
     console = Console()
     console.clear()
 
-    header = Group(
-        Text(f"Fetching stream for {channel} [{quality}]...", style="dim"),
-        Text(f"Opening [{quality}] {channel}...", style="dim"),
-        Text(""),
-    )
-    header_lines = 3
+    header = Group(Text(f"Playing [{quality}] {channel}", style="dim"), Text(""))
+    header_lines = 2
 
     view = ChatView()
     flash_text, flash_until = "", 0.0
