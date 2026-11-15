@@ -1,23 +1,25 @@
+import http.server
 import secrets
-import webbrowser
 import threading
-import time
 import urllib.parse
-import logging
+import webbrowser
 import requests
-from flask import Flask, request, Response
-from .config import CLIENT_ID
+from .config import CLIENT_ID, HTTP_TIMEOUT
 
-REDIRECT_URI = "http://localhost:8765/callback"
+PORT = 8765
+REDIRECT_URI = f"http://localhost:{PORT}/callback"
 AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
 VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
+SCOPES = ["user:read:email", "user:read:follows", "chat:read", "chat:edit"]
 
+# Twitch puts the token in the URL fragment, which never reaches a server: this page posts it back to us.
 _JS_PAGE = """
 <script>
   const params = new URLSearchParams(window.location.hash.slice(1));
   const token = params.get('access_token');
   if (token) {
-    fetch('/token', {method:'POST', body: token})
+    const state = encodeURIComponent(params.get('state') || '');
+    fetch('/token?state=' + state, {method:'POST', body: token})
       .then(() => document.write('Authenticated! You can close this tab.'));
   } else {
     document.write('Error: no token found. Please try again.');
@@ -26,54 +28,88 @@ _JS_PAGE = """
 """
 
 
+class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+    """Serves the redirect page and receives the token it posts back."""
+
+    def do_GET(self):
+        if urllib.parse.urlsplit(self.path).path == "/callback":
+            self._reply(200, _JS_PAGE, "text/html")
+        else:
+            self._reply(404, "not found")
+
+    def do_POST(self):
+        url = urllib.parse.urlsplit(self.path)
+        state = urllib.parse.parse_qs(url.query).get("state", [""])[0]
+        # only our own login redirect knows the state, so another web page can't post a token of its choosing
+        if url.path != "/token" or not secrets.compare_digest(state.encode(), self.server.state.encode()):
+            self._reply(403, "bad state")
+            return
+        try:
+            length = min(max(0, int(self.headers.get("Content-Length", 0))), 4096)
+        except ValueError:
+            length = 0
+        self.server.token = self.rfile.read(length).decode(errors="ignore")
+        self._reply(200, "ok")
+        self.server.got_token.set()
+
+    def _reply(self, status, body, content_type="text/plain"):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass  # keep request logs out of the terminal
+
+
 def login():
-    app = Flask(__name__)
-    auth_store = {"token": None}
-    auth_event = threading.Event()
-
-    @app.route("/callback")
-    def callback():
-        return Response(_JS_PAGE, mimetype="text/html")
-
-    @app.route("/token", methods=["POST"])
-    def receive_token():
-        auth_store["token"] = request.get_data(as_text=True)
-        auth_event.set()
-        return "ok"
-
-    logging.getLogger("werkzeug").setLevel(logging.ERROR)
-    threading.Thread(
-        target=lambda: app.run(port=8765, debug=False, use_reloader=False),
-        daemon=True,
-    ).start()
-    time.sleep(0.5)
+    """Log in through the browser (OAuth implicit grant) and return the access token."""
+    # threaded: an idle browser connection (preconnect) must not block the callback or shutdown()
+    server = http.server.ThreadingHTTPServer(("localhost", PORT), _CallbackHandler)
+    server.daemon_threads = True
+    server.state = secrets.token_urlsafe(16)
+    server.token = None
+    server.got_token = threading.Event()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
     params = {
         "client_id": CLIENT_ID,
         "response_type": "token",
         "redirect_uri": REDIRECT_URI,
-        "scope": "user:read:email user:read:follows chat:read chat:edit",
-        "state": secrets.token_urlsafe(16),
+        "scope": " ".join(SCOPES),
+        "state": server.state,
         "force_verify": "false",
     }
-    webbrowser.open(AUTH_URL + "?" + urllib.parse.urlencode(params))
-    print("Waiting for Twitch login in browser...")
-    if not auth_event.wait(timeout=120):
-        raise TimeoutError("Auth timed out after 120s")
-    return {"access_token": auth_store["token"]}
+    url = AUTH_URL + "?" + urllib.parse.urlencode(params)
+    webbrowser.open(url)
+    print(f"Waiting for Twitch login in your browser. If none opened, visit:\n{url}")
+    try:
+        if not server.got_token.wait(timeout=120):
+            raise TimeoutError("Auth timed out after 120s")
+    finally:
+        # frees the port, so a second login in the same run can use it again
+        server.shutdown()
+        server.server_close()
+    return server.token
 
 
-def strip_oauth(token: str) -> str:
-    if token.startswith("oauth:"):
-        return token[len("oauth:"):]
-    return token
+def _validate(token):
+    return requests.get(VALIDATE_URL, headers={"Authorization": f"OAuth {token}"}, timeout=HTTP_TIMEOUT)
 
 
-def get_username(token: str) -> str:
-    token = strip_oauth(token)
-    r = requests.get(
-        VALIDATE_URL,
-        headers={"Authorization": f"OAuth {token}"}
-    )
+def token_valid(token):
+    """Ask Twitch whether the token still works and has every scope we ask for (Twitch asks apps to check)."""
+    r = _validate(token)
+    if r.status_code == 401:
+        return False
+    r.raise_for_status()
+    # tokens from before the chat feature lack the chat scopes
+    return set(SCOPES) <= set(r.json().get("scopes", []))
+
+
+def get_username(token):
+    r = _validate(token)
     r.raise_for_status()
     return r.json()["login"]

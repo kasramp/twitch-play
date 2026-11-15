@@ -1,11 +1,12 @@
 import os
 import json
+import shutil
 import sys
-from streamlink import Streamlink
-from .auth import login
+import requests
+from .auth import login, token_valid
 from .api import TwitchAPI
-from .ui import pick_category, pick_stream, pick_quality
-from .player import play_channel
+from .ui import pause, pick_category, pick_stream
+from .player import play
 from .config import CLIENT_ID
 
 CACHE = os.path.expanduser("~/.config/twitch-play/token.json")
@@ -13,73 +14,77 @@ CACHE = os.path.expanduser("~/.config/twitch-play/token.json")
 
 def save(token):
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    with open(CACHE, "w") as f:
-        json.dump(token, f)
+    # the token is a credential: create it owner-only (fchmod covers a file left by an older version)
+    fd = os.open(CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with open(fd, "w") as f:
+        json.dump({"access_token": token}, f)
 
 
 def load():
-    if os.path.exists(CACHE):
+    """The cached token, or None when there is none or the file is unreadable."""
+    try:
+        os.chmod(CACHE, 0o600)  # older versions left it readable by everyone
+    except OSError:
+        pass  # missing file, or a read-only/foreign one we can still read
+    try:
         with open(CACHE) as f:
-            return json.load(f)
-    return None
+            return json.load(f)["access_token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def get_token(force_login=False):
+    """The cached token if Twitch still accepts it, else a new one from the browser login."""
+    token = None if force_login else load()
+    if token and token_valid(token):
+        return token
+    token = login()
+    save(token)
+    return token
+
+
+def get_token_or_exit(force_login=False):
+    try:
+        return get_token(force_login)
+    except OSError as e:  # covers the login timeout, a busy port and requests' network/HTTP errors
+        sys.exit(f"Twitch login failed: {e}. Run twitch-play again to retry.")
 
 
 def main():
-    token_data = load()
-    if not token_data:
-        token_data = login()
-        save(token_data)
+    missing = [cmd for cmd in ("fzf", "mpv") if not shutil.which(cmd)]
+    if missing:
+        sys.exit(f"twitch-play needs {' and '.join(missing)} installed; see the README.")
+    api = TwitchAPI(CLIENT_ID, get_token_or_exit(), relogin=lambda: get_token_or_exit(force_login=True))
+    try:
+        browse(api)
+    except requests.RequestException as e:
+        sys.exit(f"Twitch API error: {e}")
 
-    api = TwitchAPI(CLIENT_ID, token_data["access_token"])
 
+def browse(api):
     while True:
         cat = pick_category(api)
         if not cat:
-            sys.exit(0)
-
-        # direct URL flow
+            return
         if "url" in cat:
-            url = cat["url"]
-            quality = cat.get("quality", "best")
-            print(f"Validating {url}...")
-            try:
-                session = Streamlink()
-                streams = session.streams(url)
-                if not streams:
-                    print(f"No playable streams found for: {url}")
-                    input("Press Enter to go back...")
-                    continue
-                if quality == "pick":
-                    available = [q for q in streams.keys() if q not in ("worst", "best")]
-                    quality = pick_quality(available) or "best"
-            except Exception as e:
-                print(f"Could not open {url}: {e}")
-                input("Press Enter to go back...")
-                continue
-            play_channel(url, quality=quality, token=token_data["access_token"])
+            play(cat["url"], cat["quality"], api.token)
             continue
 
-        # normal category -> stream flow
         while True:
             streams = api.streams(cat["id"])
             if not streams:
-                print(f"No live streams in '{cat['name']}' right now.")
+                pause(f"No live streams in '{cat['name']}' right now.")
                 break
             streams.sort(key=lambda s: s["viewer_count"], reverse=True)
             stream, quality = pick_stream(streams)
             if not stream:
                 break
-            if quality == "pick":
-                session = Streamlink()
-                sl_streams = session.streams(f"twitch.tv/{stream['user_login']}")
-                available = [q for q in sl_streams.keys() if q not in ("worst", "best")]
-                quality = pick_quality(available) or "best"
-            play_channel(
-                stream["user_login"],
-                title=stream.get("title", ""),
-                streamer=stream.get("user_name", ""),
-                quality=quality,
-                token=token_data["access_token"],
+            play(
+                f"https://twitch.tv/{stream['user_login']}",
+                quality,
+                api.token,
+                title=f"{stream['user_name']} — {stream.get('title', '')}",
             )
 
 

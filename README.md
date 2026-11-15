@@ -8,6 +8,7 @@ A minimal Twitch CLI app built on top of mpv, streamlink, and fzf.
 - [mpv](https://mpv.io)
 - [streamlink](https://streamlink.github.io)
 - [fzf](https://github.com/junegunn/fzf)
+- A clipboard tool for copying: [xclip](https://github.com/astrand/xclip) (X11) or [wl-clipboard](https://github.com/bugaevc/wl-clipboard) (Wayland); macOS has one built in
 
 ## Installation
 
@@ -56,15 +57,18 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 | Ctrl-H | Play at 720p                        |
 | Ctrl-B | Play at best quality                |
 | Ctrl-O | Pick quality from list              |
-| Ctrl-C | Copy channel name to the clipboard  |
+| Ctrl-C | Copy the stream URL to the clipboard |
 | Ctrl-F | Search categories (category screen) |
+| Ctrl-O | Open a stream URL, prefilled from the clipboard (category screen) |
 | Esc    | Go back                             |
 
 ### Chat
 
 | Key    | Action                              |
 |--------|-------------------------------------|
-| /      | Search                              |
-| p      | Pause chat scrolling                |
-| k      | Go up in the chat                   |
-| j      | Go down in the chat                 |
+| /      | Search as you type (Enter to browse the results, Esc to cancel) |
+| p      | Pause chat scrolling, or clear the search |
+| k / Up   | Go up in the chat                 |
+| j / Down | Go down in the chat               |
+| y      | Copy the selected message         |
+| i      | Write a chat message (Enter to send, Esc to cancel) |

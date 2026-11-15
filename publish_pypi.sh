@@ -3,12 +3,12 @@
 set -e
 
 # ─────────────────────────────────────────────
-# push_pypi.sh
+# publish_pypi.sh
 # Builds and uploads twitch-play to PyPI.
 #
 # Usage:
-#   chmod +x push_pypi.sh
-#   ./push_pypi.sh
+#   chmod +x publish_pypi.sh
+#   ./publish_pypi.sh
 #
 # Requirements:
 #   pip install build twine
