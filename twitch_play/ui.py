@@ -148,8 +148,12 @@ def pick_stream(streams):
 
         if key == "ctrl-c":
             url = f"https://twitch.tv/{user_login}"
-            pyperclip.copy(url)
-            print(f"Copied: {url}")
+            try:
+                pyperclip.copy(url)
+                print(f"Copied: {url}")
+            except pyperclip.PyperclipException:
+                print(f"Could not copy {url}: install xclip or xsel (X11) or wl-clipboard (Wayland).")
+                input("Press Enter to go back...")
             continue
 
         quality = QUALITY_MAP.get(key, "best")
