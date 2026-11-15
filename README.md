@@ -57,15 +57,17 @@ There's a Client ID in the `config.py` file, which you can use for experiments. 
 | Ctrl-H | Play at 720p                        |
 | Ctrl-B | Play at best quality                |
 | Ctrl-O | Pick quality from list              |
-| Ctrl-C | Copy channel name to the clipboard  |
+| Ctrl-C | Copy the stream URL to the clipboard |
 | Ctrl-F | Search categories (category screen) |
+| Ctrl-O | Open a stream URL, prefilled from the clipboard (category screen) |
 | Esc    | Go back                             |
 
 ### Chat
 
 | Key    | Action                              |
 |--------|-------------------------------------|
-| /      | Search                              |
-| p      | Pause chat scrolling                |
+| /      | Search (Enter to apply, Esc to cancel) |
+| p      | Pause chat scrolling, or clear the search |
 | k / Up   | Go up in the chat                 |
 | j / Down | Go down in the chat               |
+| y      | Copy the selected message         |
