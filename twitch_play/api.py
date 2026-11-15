@@ -1,4 +1,3 @@
-import sys
 import urllib.parse
 import requests
 
@@ -6,9 +5,10 @@ BASE = "https://api.twitch.tv/helix"
 
 
 class TwitchAPI:
-    def __init__(self, client_id, token):
+    def __init__(self, client_id, token, relogin):
         self.client_id = client_id
         self.token = token
+        self.relogin = relogin  # returns a fresh token after logging in again
 
     def _headers(self):
         return {
@@ -19,8 +19,9 @@ class TwitchAPI:
     def _get(self, url):
         r = requests.get(url, headers=self._headers())
         if r.status_code == 401:
-            print("Token expired. Delete ~/.config/twitch-play/token.json and re-run.")
-            sys.exit(1)
+            print("Twitch login expired, logging in again...")
+            self.token = self.relogin()
+            r = requests.get(url, headers=self._headers())
         r.raise_for_status()
         return r.json()
 

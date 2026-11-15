@@ -2,7 +2,7 @@ import os
 import json
 import sys
 from streamlink import Streamlink
-from .auth import login
+from .auth import login, token_valid
 from .api import TwitchAPI
 from .ui import pick_category, pick_stream, pick_quality
 from .player import play_channel
@@ -24,13 +24,25 @@ def load():
     return None
 
 
-def main():
-    token_data = load()
-    if not token_data:
-        token_data = login()
-        save(token_data)
+def get_token(force_login=False):
+    """The cached token if Twitch still accepts it, else a new one from the browser login."""
+    token_data = None if force_login else load()
+    if token_data and token_valid(token_data["access_token"]):
+        return token_data["access_token"]
+    token_data = login()
+    save(token_data)
+    return token_data["access_token"]
 
-    api = TwitchAPI(CLIENT_ID, token_data["access_token"])
+
+def get_token_or_exit(force_login=False):
+    try:
+        return get_token(force_login)
+    except OSError as e:  # covers the login timeout, a busy port and requests' network/HTTP errors
+        sys.exit(f"Twitch login failed: {e}. Run twitch-play again to retry.")
+
+
+def main():
+    api = TwitchAPI(CLIENT_ID, get_token_or_exit(), relogin=lambda: get_token_or_exit(force_login=True))
 
     while True:
         cat = pick_category(api)
@@ -58,7 +70,7 @@ def main():
                 print(f"Could not open {url}: {e}")
                 input("Press Enter to go back...")
                 continue
-            play_channel(url, quality=quality, token=token_data["access_token"])
+            play_channel(url, quality=quality, token=api.token)
             continue
 
         # normal category -> stream flow
@@ -83,7 +95,7 @@ def main():
                 title=stream.get("title", ""),
                 streamer=stream.get("user_name", ""),
                 quality=quality,
-                token=token_data["access_token"],
+                token=api.token,
             )
 
 
