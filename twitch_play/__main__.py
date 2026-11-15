@@ -14,16 +14,21 @@ CACHE = os.path.expanduser("~/.config/twitch-play/token.json")
 
 def save(token):
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    with open(CACHE, "w") as f:
-        os.chmod(CACHE, 0o600)  # the token is a credential: owner-only
+    # the token is a credential: create it owner-only (fchmod covers a file left by an older version)
+    fd = os.open(CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with open(fd, "w") as f:
         json.dump({"access_token": token}, f)
 
 
 def load():
     """The cached token, or None when there is none or the file is unreadable."""
     try:
+        os.chmod(CACHE, 0o600)  # older versions left it readable by everyone
+    except OSError:
+        pass  # missing file, or a read-only/foreign one we can still read
+    try:
         with open(CACHE) as f:
-            os.chmod(CACHE, 0o600)  # older versions left it readable by everyone
             return json.load(f)["access_token"]
     except (OSError, ValueError, KeyError, TypeError):
         return None

@@ -35,7 +35,7 @@ def play(url, quality="best", token=None, title=""):
     print(f"Fetching {url}...")
     try:
         streams = Streamlink().streams(url)
-    except StreamlinkError as e:
+    except (StreamlinkError, ValueError) as e:  # ValueError: malformed URLs such as "http://[::1"
         pause(f"Could not open {url}: {e}")
         return
     if not streams:

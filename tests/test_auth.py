@@ -1,4 +1,5 @@
 import os
+import socket
 import stat
 import tempfile
 import unittest
@@ -119,6 +120,18 @@ class LoginServerTest(unittest.TestCase):
             self.assertEqual(self.statuses, [200])
 
     @mock.patch("twitch_play.auth.print", create=True)
+    def test_idle_connection_does_not_block(self, _print):
+        # a browser preconnect: a socket that connects and never sends a request
+        open_url = self.fake_browser([(None, "tok")])
+
+        def preconnect_then_post(url):
+            with socket.create_connection(("localhost", 8765), timeout=5):
+                open_url(url)
+
+        with mock.patch("twitch_play.auth.webbrowser.open", preconnect_then_post):
+            self.assertEqual(login(), "tok")
+
+    @mock.patch("twitch_play.auth.print", create=True)
     def test_forged_token_rejected(self, _print):
         posts = [("guessed-state", "attacker-token"), (None, "tok")]
         with mock.patch("twitch_play.auth.webbrowser.open", self.fake_browser(posts)):
@@ -142,6 +155,15 @@ class TokenFileTest(unittest.TestCase):
         app.save("abc")
         self.assertEqual(app.load(), "abc")
         self.assertEqual(self.mode(), 0o600)
+
+    def test_save_over_world_readable_file(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w") as f:
+            f.write("{}")
+        os.chmod(self.path, 0o644)
+        app.save("abc")
+        self.assertEqual(self.mode(), 0o600)
+        self.assertEqual(app.load(), "abc")
 
     def test_old_world_readable_file_is_tightened(self):
         os.makedirs(os.path.dirname(self.path))

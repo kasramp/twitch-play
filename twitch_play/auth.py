@@ -44,7 +44,10 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         if url.path != "/token" or not secrets.compare_digest(state.encode(), self.server.state.encode()):
             self._reply(403, "bad state")
             return
-        length = min(int(self.headers.get("Content-Length", 0)), 4096)
+        try:
+            length = min(max(0, int(self.headers.get("Content-Length", 0))), 4096)
+        except ValueError:
+            length = 0
         self.server.token = self.rfile.read(length).decode(errors="ignore")
         self._reply(200, "ok")
         self.server.got_token.set()
@@ -63,7 +66,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 def login():
     """Log in through the browser (OAuth implicit grant) and return the access token."""
-    server = http.server.HTTPServer(("localhost", PORT), _CallbackHandler)
+    # threaded: an idle browser connection (preconnect) must not block the callback or shutdown()
+    server = http.server.ThreadingHTTPServer(("localhost", PORT), _CallbackHandler)
+    server.daemon_threads = True
     server.state = secrets.token_urlsafe(16)
     server.token = None
     server.got_token = threading.Event()

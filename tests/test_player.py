@@ -57,6 +57,11 @@ class PlayTest(unittest.TestCase):
         self.assertIn("boom", pause.call_args.args[0])
         watch.assert_not_called()
 
+    def test_malformed_url_is_shown(self, _print, streamlink, pause, watch):
+        streamlink.return_value.streams.side_effect = ValueError("Invalid IPv6 URL")
+        player.play("http://[::1")
+        pause.assert_called_once()
+
     @mock.patch.object(player, "pick_quality", return_value=None)
     def test_pick_cancelled(self, pick, _print, streamlink, pause, watch):
         streamlink.return_value.streams.return_value = {"480p": 1, "720p60": 2, "best": 2, "worst": 1}
