@@ -1,18 +1,18 @@
+import http.server
 import secrets
-import webbrowser
 import threading
 import urllib.parse
-import logging
+import webbrowser
 import requests
-from flask import Flask, request, Response
-from werkzeug.serving import make_server
-from .config import CLIENT_ID
+from .config import CLIENT_ID, HTTP_TIMEOUT
 
-REDIRECT_URI = "http://localhost:8765/callback"
+PORT = 8765
+REDIRECT_URI = f"http://localhost:{PORT}/callback"
 AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
 VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
 SCOPES = ["user:read:email", "user:read:follows", "chat:read", "chat:edit"]
 
+# Twitch puts the token in the URL fragment, which never reaches a server: this page posts it back to us.
 _JS_PAGE = """
 <script>
   const params = new URLSearchParams(window.location.hash.slice(1));
@@ -28,28 +28,45 @@ _JS_PAGE = """
 """
 
 
+class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+    """Serves the redirect page and receives the token it posts back."""
+
+    def do_GET(self):
+        if urllib.parse.urlsplit(self.path).path == "/callback":
+            self._reply(200, _JS_PAGE, "text/html")
+        else:
+            self._reply(404, "not found")
+
+    def do_POST(self):
+        url = urllib.parse.urlsplit(self.path)
+        state = urllib.parse.parse_qs(url.query).get("state", [""])[0]
+        # only our own login redirect knows the state, so another web page can't post a token of its choosing
+        if url.path != "/token" or not secrets.compare_digest(state.encode(), self.server.state.encode()):
+            self._reply(403, "bad state")
+            return
+        length = min(int(self.headers.get("Content-Length", 0)), 4096)
+        self.server.token = self.rfile.read(length).decode(errors="ignore")
+        self._reply(200, "ok")
+        self.server.got_token.set()
+
+    def _reply(self, status, body, content_type="text/plain"):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass  # keep request logs out of the terminal
+
+
 def login():
-    app = Flask(__name__)
-    # only our own login redirect knows this, so another web page can't post a token of its choosing
-    state = secrets.token_urlsafe(16)
-    auth_store = {"token": None}
-    auth_event = threading.Event()
-
-    @app.route("/callback")
-    def callback():
-        return Response(_JS_PAGE, mimetype="text/html")
-
-    @app.route("/token", methods=["POST"])
-    def receive_token():
-        if not secrets.compare_digest(request.args.get("state", ""), state):
-            return "bad state", 403
-        auth_store["token"] = request.get_data(as_text=True)
-        auth_event.set()
-        return "ok"
-
-    logging.getLogger("werkzeug").setLevel(logging.ERROR)
-    # a server we can shut down, so a second login in the same run can bind the port again
-    server = make_server("localhost", 8765, app)
+    """Log in through the browser (OAuth implicit grant) and return the access token."""
+    server = http.server.HTTPServer(("localhost", PORT), _CallbackHandler)
+    server.state = secrets.token_urlsafe(16)
+    server.token = None
+    server.got_token = threading.Event()
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     params = {
@@ -57,29 +74,29 @@ def login():
         "response_type": "token",
         "redirect_uri": REDIRECT_URI,
         "scope": " ".join(SCOPES),
-        "state": state,
+        "state": server.state,
         "force_verify": "false",
     }
-    webbrowser.open(AUTH_URL + "?" + urllib.parse.urlencode(params))
-    print("Waiting for Twitch login in browser...")
+    url = AUTH_URL + "?" + urllib.parse.urlencode(params)
+    webbrowser.open(url)
+    print(f"Waiting for Twitch login in your browser. If none opened, visit:\n{url}")
     try:
-        if not auth_event.wait(timeout=120):
+        if not server.got_token.wait(timeout=120):
             raise TimeoutError("Auth timed out after 120s")
     finally:
+        # frees the port, so a second login in the same run can use it again
         server.shutdown()
         server.server_close()
-    return {"access_token": auth_store["token"]}
+    return server.token
 
 
-def strip_oauth(token: str) -> str:
-    if token.startswith("oauth:"):
-        return token[len("oauth:"):]
-    return token
+def _validate(token):
+    return requests.get(VALIDATE_URL, headers={"Authorization": f"OAuth {token}"}, timeout=HTTP_TIMEOUT)
 
 
-def token_valid(token: str) -> bool:
+def token_valid(token):
     """Ask Twitch whether the token still works and has every scope we ask for (Twitch asks apps to check)."""
-    r = requests.get(VALIDATE_URL, headers={"Authorization": f"OAuth {strip_oauth(token)}"})
+    r = _validate(token)
     if r.status_code == 401:
         return False
     r.raise_for_status()
@@ -87,11 +104,7 @@ def token_valid(token: str) -> bool:
     return set(SCOPES) <= set(r.json().get("scopes", []))
 
 
-def get_username(token: str) -> str:
-    token = strip_oauth(token)
-    r = requests.get(
-        VALIDATE_URL,
-        headers={"Authorization": f"OAuth {token}"}
-    )
+def get_username(token):
+    r = _validate(token)
     r.raise_for_status()
     return r.json()["login"]

@@ -1,4 +1,6 @@
-import threading
+import os
+import stat
+import tempfile
 import unittest
 import urllib.parse
 from unittest import mock
@@ -20,9 +22,9 @@ def response(status, body=None):
 class GetTokenTest(unittest.TestCase):
     def setUp(self):
         patches = {
-            "load": mock.patch.object(app, "load", return_value={"access_token": "old"}),
+            "load": mock.patch.object(app, "load", return_value="old"),
             "save": mock.patch.object(app, "save"),
-            "login": mock.patch.object(app, "login", return_value={"access_token": "new"}),
+            "login": mock.patch.object(app, "login", return_value="new"),
             "valid": mock.patch.object(app, "token_valid", return_value=True),
         }
         self.m = {name: p.start() for name, p in patches.items()}
@@ -35,7 +37,7 @@ class GetTokenTest(unittest.TestCase):
     def test_expired_token_logs_in_again(self):
         self.m["valid"].return_value = False
         self.assertEqual(app.get_token(), "new")
-        self.m["save"].assert_called_once_with({"access_token": "new"})
+        self.m["save"].assert_called_once_with("new")
 
     def test_no_cached_token_logs_in(self):
         self.m["load"].return_value = None
@@ -50,8 +52,9 @@ class TokenValidTest(unittest.TestCase):
     @mock.patch("twitch_play.auth.requests.get")
     def test_statuses(self, get):
         get.return_value = response(200, {"scopes": SCOPES})
-        self.assertTrue(token_valid("oauth:abc"))
+        self.assertTrue(token_valid("abc"))
         self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "OAuth abc"})
+        self.assertIn("timeout", get.call_args.kwargs)
         get.return_value = response(401)
         self.assertFalse(token_valid("abc"))
         get.return_value = response(500)
@@ -112,15 +115,65 @@ class LoginServerTest(unittest.TestCase):
     def test_login_twice_in_one_run(self, _print):
         for _ in range(2):  # the port must be free again for a second login
             with mock.patch("twitch_play.auth.webbrowser.open", self.fake_browser([(None, "tok")])):
-                self.assertEqual(login(), {"access_token": "tok"})
+                self.assertEqual(login(), "tok")
             self.assertEqual(self.statuses, [200])
 
     @mock.patch("twitch_play.auth.print", create=True)
     def test_forged_token_rejected(self, _print):
         posts = [("guessed-state", "attacker-token"), (None, "tok")]
         with mock.patch("twitch_play.auth.webbrowser.open", self.fake_browser(posts)):
-            self.assertEqual(login(), {"access_token": "tok"})
+            self.assertEqual(login(), "tok")
         self.assertEqual(self.statuses, [403, 200])
+
+
+class TokenFileTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "sub", "token.json")
+        patch = mock.patch.object(app, "CACHE", self.path)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def mode(self):
+        return stat.S_IMODE(os.stat(self.path).st_mode)
+
+    def test_round_trip_owner_only(self):
+        app.save("abc")
+        self.assertEqual(app.load(), "abc")
+        self.assertEqual(self.mode(), 0o600)
+
+    def test_old_world_readable_file_is_tightened(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w") as f:
+            f.write('{"access_token": "abc"}')
+        os.chmod(self.path, 0o644)
+        self.assertEqual(app.load(), "abc")
+        self.assertEqual(self.mode(), 0o600)
+
+    def test_missing_or_broken_file(self):
+        self.assertIsNone(app.load())
+        os.makedirs(os.path.dirname(self.path))
+        for content in ("", "{not json", "[]", '{"other": 1}'):
+            with open(self.path, "w") as f:
+                f.write(content)
+            self.assertIsNone(app.load(), content)
+
+
+class MainTest(unittest.TestCase):
+    @mock.patch.object(app.shutil, "which", side_effect=lambda cmd: None if cmd == "mpv" else "/usr/bin/fzf")
+    def test_missing_mpv(self, _which):
+        with self.assertRaises(SystemExit) as ctx:
+            app.main()
+        self.assertIn("mpv", str(ctx.exception.code))
+
+    @mock.patch.object(app.shutil, "which", return_value="/usr/bin/x")
+    @mock.patch.object(app, "get_token_or_exit", return_value="tok")
+    @mock.patch.object(app, "browse", side_effect=requests.ConnectionError("network down"))
+    def test_api_error_exits_cleanly(self, _browse, _token, _which):
+        with self.assertRaises(SystemExit) as ctx:
+            app.main()
+        self.assertIn("network down", str(ctx.exception.code))
 
 
 class GetTokenOrExitTest(unittest.TestCase):

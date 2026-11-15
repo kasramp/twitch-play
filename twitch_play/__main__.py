@@ -1,6 +1,8 @@
 import os
 import json
+import shutil
 import sys
+import requests
 from .auth import login, token_valid
 from .api import TwitchAPI
 from .ui import pause, pick_category, pick_stream
@@ -13,24 +15,28 @@ CACHE = os.path.expanduser("~/.config/twitch-play/token.json")
 def save(token):
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     with open(CACHE, "w") as f:
-        json.dump(token, f)
+        os.chmod(CACHE, 0o600)  # the token is a credential: owner-only
+        json.dump({"access_token": token}, f)
 
 
 def load():
-    if os.path.exists(CACHE):
+    """The cached token, or None when there is none or the file is unreadable."""
+    try:
         with open(CACHE) as f:
-            return json.load(f)
-    return None
+            os.chmod(CACHE, 0o600)  # older versions left it readable by everyone
+            return json.load(f)["access_token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def get_token(force_login=False):
     """The cached token if Twitch still accepts it, else a new one from the browser login."""
-    token_data = None if force_login else load()
-    if token_data and token_valid(token_data["access_token"]):
-        return token_data["access_token"]
-    token_data = login()
-    save(token_data)
-    return token_data["access_token"]
+    token = None if force_login else load()
+    if token and token_valid(token):
+        return token
+    token = login()
+    save(token)
+    return token
 
 
 def get_token_or_exit(force_login=False):
@@ -41,8 +47,17 @@ def get_token_or_exit(force_login=False):
 
 
 def main():
+    missing = [cmd for cmd in ("fzf", "mpv") if not shutil.which(cmd)]
+    if missing:
+        sys.exit(f"twitch-play needs {' and '.join(missing)} installed; see the README.")
     api = TwitchAPI(CLIENT_ID, get_token_or_exit(), relogin=lambda: get_token_or_exit(force_login=True))
+    try:
+        browse(api)
+    except requests.RequestException as e:
+        sys.exit(f"Twitch API error: {e}")
 
+
+def browse(api):
     while True:
         cat = pick_category(api)
         if not cat:
